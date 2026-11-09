@@ -15,6 +15,10 @@ Swipe a character card left to pass or right to match. Matches appear in **Chats
 
 Character photos can be added under `public/characters/`; set each character's `image` in `app/page.tsx` to its public path (for example, `/characters/hades.jpg`). Until then, the app shows a neutral photo placeholder.
 
+## Deploy with AWS Amplify
+
+The root `amplify.yml` installs dependencies from `package-lock.json` with `npm ci --include=dev` before running the production build. Commit and push this file, then redeploy. If Amplify is configured with build commands in the console, make sure they do not override the build spec.
+
 ## Checks
 
 ```bash
