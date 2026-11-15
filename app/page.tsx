@@ -260,9 +260,9 @@ export default function Home() {
   }, [guestIdentity, matches, matchesLoaded]);
 
   useEffect(() => {
-    const characterId = selectedCharacter?.id;
-    const voterId = guestIdentity?.userId;
-    if (!characterId || !voterId) return;
+    if (!selectedCharacter || !guestIdentity) return;
+    const characterId = selectedCharacter.id;
+    const voterId = guestIdentity.userId;
 
     const controller = new AbortController();
     async function loadComments() {
