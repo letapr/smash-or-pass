@@ -2,30 +2,13 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent } from "react";
+import type { CommentPage, CommentRecord, CommentVote, GuestIdentity } from "@/lib/comments";
 
 type Character = {
   id: string;
   name: string;
   image: string | null;
   color: string;
-};
-
-type Reply = {
-  id: string;
-  author: string;
-  text: string;
-  time: string;
-};
-
-type Thread = {
-  id: string;
-  author: string;
-  text: string;
-  time: string;
-  replies: Reply[];
-  replyDraft: string;
-  replyOpen: boolean;
-  liked: boolean;
 };
 
 const characters: Character[] = [
@@ -43,65 +26,274 @@ const characters: Character[] = [
   },
 ];
 
-function createId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+type CommentItemProps = {
+  comment: CommentRecord;
+  childrenByParent: Map<string, CommentRecord[]>;
+  username: string;
+  votingCommentIds: Set<string>;
+  onCreateReply: (parent: CommentRecord, text: string) => Promise<boolean>;
+  onVote: (comment: CommentRecord, vote: Exclude<CommentVote, null>) => void;
+};
+
+function formatCommentTime(value: string) {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "just now";
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(value).toLocaleDateString();
 }
 
-function createStarterThreads(characterId: string): Thread[] {
-  const isHades = characterId === "hades";
-  return [
-    {
-      id: `starter-${characterId}-1`,
-      author: isHades ? "blueflamefan" : "creaturecomforts",
-      text: isHades
-        ? "Is the fast-talking confidence charming, or am I ignoring some obvious red flags?"
-        : "Not to be dramatic, but Bob might be the most emotionally available monster ever.",
-      time: "2h ago",
-      replies: [
-        {
-          id: `starter-${characterId}-reply-1`,
-          author: isHades ? "olympus_observer" : "teamblob",
-          text: isHades ? "The banter is doing a lot of heavy lifting." : "And the optimism is kind of contagious.",
-          time: "1h ago",
-        },
-      ],
-      replyDraft: "",
-      replyOpen: false,
-      liked: false,
-    },
-    {
-      id: `starter-${characterId}-2`,
-      author: isHades ? "mythsnack" : "monsterwatcher",
-      text: isHades
-        ? "Blue fire hair is a look. I don't make the rules."
-        : "One eye, zero bad vibes. That's a pretty great ratio.",
-      time: "5h ago",
-      replies: [],
-      replyDraft: "",
-      replyOpen: false,
-      liked: false,
-    },
-  ];
+function CommentItem({
+  comment,
+  childrenByParent,
+  username,
+  votingCommentIds,
+  onCreateReply,
+  onVote,
+}: CommentItemProps) {
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyDraft, setReplyDraft] = useState("");
+  const [replyPending, setReplyPending] = useState(false);
+  const replies = childrenByParent.get(comment.id) ?? [];
+
+  async function submitReply(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = replyDraft.trim();
+    if (!text || replyPending) return;
+
+    setReplyPending(true);
+    if (await onCreateReply(comment, text)) {
+      setReplyDraft("");
+      setReplyOpen(false);
+    }
+    setReplyPending(false);
+  }
+
+  return (
+    <article className="comment-node">
+      <div className="thread-card">
+        <div className="thread-user-avatar">{comment.username.slice(0, 1).toUpperCase()}</div>
+        <div className="thread-body">
+          <div className="thread-meta"><strong>{comment.username}</strong><span>·</span><span>{formatCommentTime(comment.createdAt)}</span></div>
+          <p className="thread-text">{comment.text}</p>
+          <div className="thread-actions">
+            <button
+              className={comment.myVote === "like" ? "action-liked" : ""}
+              onClick={() => onVote(comment, "like")}
+              disabled={votingCommentIds.has(comment.id)}
+              aria-label={comment.myVote === "like" ? "Remove like" : "Like comment"}
+              aria-pressed={comment.myVote === "like"}
+            >
+              <span>▲</span> {comment.likes}
+            </button>
+            <button
+              className={comment.myVote === "dislike" ? "action-disliked" : ""}
+              onClick={() => onVote(comment, "dislike")}
+              disabled={votingCommentIds.has(comment.id)}
+              aria-label={comment.myVote === "dislike" ? "Remove dislike" : "Dislike comment"}
+              aria-pressed={comment.myVote === "dislike"}
+            >
+              <span>▼</span> {comment.dislikes}
+            </button>
+            <button onClick={() => setReplyOpen((current) => !current)} aria-expanded={replyOpen}>
+              <span>↩</span> Reply
+            </button>
+          </div>
+          {replyOpen && (
+            <form className="reply-form" onSubmit={submitReply}>
+              <span className="reply-avatar">{username.slice(0, 1).toUpperCase()}</span>
+              <input
+                value={replyDraft}
+                onChange={(event) => setReplyDraft(event.target.value)}
+                placeholder={`Reply as ${username || "Guest"}...`}
+                aria-label={`Reply to ${comment.username}`}
+                maxLength={1000}
+                autoFocus
+              />
+              <button type="submit" disabled={!replyDraft.trim() || !username.trim() || replyPending}>Reply</button>
+            </form>
+          )}
+        </div>
+      </div>
+      {replies.length > 0 && (
+        <div className="comment-children">
+          {replies.map((reply) => (
+            <CommentItem
+              key={reply.id}
+              comment={reply}
+              childrenByParent={childrenByParent}
+              username={username}
+              votingCommentIds={votingCommentIds}
+              onCreateReply={onCreateReply}
+              onVote={onVote}
+            />
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+async function getApiError(response: Response) {
+  try {
+    const body: unknown = await response.json();
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "error" in body &&
+      typeof body.error === "string"
+    ) {
+      return body.error;
+    }
+  } catch {
+    return `The request failed (${response.status}).`;
+  }
+  return `The request failed (${response.status}).`;
 }
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"swipe" | "chats">("swipe");
   const [cardIndex, setCardIndex] = useState(0);
   const [matches, setMatches] = useState<Character[]>([]);
+  const [matchesLoaded, setMatchesLoaded] = useState(false);
+  const [guestIdentity, setGuestIdentity] = useState<GuestIdentity | null>(null);
+  const [storageWarning, setStorageWarning] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingMatch, setPendingMatch] = useState<Character | null>(null);
-  const [threadsByCharacter, setThreadsByCharacter] = useState<
-    Record<string, Thread[]>
-  >({});
+  const [comments, setComments] = useState<CommentRecord[]>([]);
+  const [commentCursor, setCommentCursor] = useState<string | null>(null);
+  const [hasMoreComments, setHasMoreComments] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [loadingMoreComments, setLoadingMoreComments] = useState(false);
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const [commentError, setCommentError] = useState("");
+  const [votingCommentIds, setVotingCommentIds] = useState<Set<string>>(new Set());
   const [threadDraft, setThreadDraft] = useState("");
   const [dragOffset, setDragOffset] = useState(0);
   const dragStart = useRef<number | null>(null);
 
   const activeCharacter = characters[cardIndex];
   const selectedCharacter = matches.find((character) => character.id === selectedId);
-  const selectedThreads = selectedCharacter
-    ? threadsByCharacter[selectedCharacter.id] ?? []
-    : [];
+  const childrenByParent = new Map<string, CommentRecord[]>();
+  const roots: CommentRecord[] = [];
+  for (const comment of comments) {
+    if (comment.parentId) {
+      const siblings = childrenByParent.get(comment.parentId) ?? [];
+      siblings.push(comment);
+      childrenByParent.set(comment.parentId, siblings);
+    } else {
+      roots.push(comment);
+    }
+  }
+  roots.sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+  for (const replies of childrenByParent.values()) {
+    replies.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
+  }
+
+  useEffect(() => {
+    const userId = crypto.randomUUID();
+    let identity: GuestIdentity = {
+      userId,
+      username: `Guest-${userId.slice(0, 5)}`,
+    };
+
+    try {
+      const storedIdentity = localStorage.getItem("smash-or-pass:guest");
+      if (storedIdentity) {
+        const parsed: unknown = JSON.parse(storedIdentity);
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "userId" in parsed &&
+          typeof parsed.userId === "string" &&
+          /^[\da-f]{8}-[\da-f]{4}-[1-8][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(parsed.userId) &&
+          "username" in parsed &&
+          typeof parsed.username === "string"
+        ) {
+          identity = {
+            userId: parsed.userId,
+            username: parsed.username.slice(0, 24),
+          };
+        }
+      }
+
+      const storedMatches = localStorage.getItem("smash-or-pass:matches");
+      if (storedMatches) {
+        const parsed: unknown = JSON.parse(storedMatches);
+        if (Array.isArray(parsed)) {
+          const ids = parsed.filter(
+            (id): id is string => typeof id === "string" && characters.some((character) => character.id === id),
+          );
+          const savedMatches = characters.filter((character) => ids.includes(character.id));
+          setMatches(savedMatches);
+          setSelectedId(savedMatches[0]?.id ?? null);
+        } else {
+          setStorageWarning("Saved matches could not be read; your new matches will still be saved.");
+        }
+      }
+    } catch (error) {
+      console.error("Could not read the guest profile from browser storage.", error);
+      setStorageWarning("Browser storage is unavailable. Your guest name and matches may not persist.");
+    }
+
+    setGuestIdentity(identity);
+    setMatchesLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!guestIdentity || !matchesLoaded) return;
+    try {
+      localStorage.setItem("smash-or-pass:guest", JSON.stringify(guestIdentity));
+      localStorage.setItem(
+        "smash-or-pass:matches",
+        JSON.stringify(matches.map((character) => character.id)),
+      );
+    } catch (error) {
+      console.error("Could not save the guest profile to browser storage.", error);
+      setStorageWarning("Browser storage is unavailable. Your guest name and matches may not persist.");
+    }
+  }, [guestIdentity, matches, matchesLoaded]);
+
+  useEffect(() => {
+    const characterId = selectedCharacter?.id;
+    const voterId = guestIdentity?.userId;
+    if (!characterId || !voterId) return;
+
+    const controller = new AbortController();
+    async function loadComments() {
+      setComments([]);
+      setCommentCursor(null);
+      setHasMoreComments(false);
+      setCommentError("");
+      setCommentsLoading(true);
+      try {
+        const query = new URLSearchParams({ characterId, voterId });
+        const response = await fetch(`/api/comments?${query}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await getApiError(response));
+        const page = (await response.json()) as CommentPage;
+        setComments(page.comments);
+        setCommentCursor(page.nextCursor);
+        setHasMoreComments(page.nextCursor !== null);
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
+        console.error("Could not load character comments.", error);
+        setCommentError(error instanceof Error ? error.message : "Comments could not be loaded.");
+      } finally {
+        if (!controller.signal.aborted) setCommentsLoading(false);
+      }
+    }
+
+    void loadComments();
+    return () => controller.abort();
+  }, [selectedCharacter?.id, guestIdentity?.userId]);
 
   useEffect(() => {
     if (!pendingMatch) return;
@@ -112,10 +304,6 @@ export default function Home() {
           ? current
           : [...current, pendingMatch],
       );
-      setThreadsByCharacter((current) => ({
-        ...current,
-        [pendingMatch.id]: current[pendingMatch.id] ?? createStarterThreads(pendingMatch.id),
-      }));
       setSelectedId(pendingMatch.id);
       setActiveTab("chats");
       setPendingMatch(null);
@@ -158,48 +346,129 @@ export default function Home() {
     }
   }
 
-  function addThread(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const text = threadDraft.trim();
-    if (!text || !selectedCharacter) return;
+  async function createComment(parent: CommentRecord | null, text: string) {
+    const character = selectedCharacter;
+    const identity = guestIdentity;
+    if (!character || !identity || !text.trim() || submittingComment) return false;
 
-    const thread: Thread = {
-      id: createId(),
-      author: "You",
-      text,
-      time: "just now",
-      replies: [],
-      replyDraft: "",
-      replyOpen: false,
-      liked: false,
-    };
-    setThreadsByCharacter((current) => ({
-      ...current,
-      [selectedCharacter.id]: [thread, ...(current[selectedCharacter.id] ?? [])],
-    }));
-    setThreadDraft("");
+    setSubmittingComment(true);
+    setCommentError("");
+    try {
+      const response = await fetch("/api/comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterId: character.id,
+          username: identity.username.trim(),
+          userId: identity.userId,
+          text: text.trim(),
+          parentId: parent?.id ?? null,
+          parentTimestamp: parent?.timestamp ?? null,
+        }),
+      });
+      if (!response.ok) throw new Error(await getApiError(response));
+      const result = (await response.json()) as { comment: CommentRecord };
+      setComments((current) =>
+        selectedId === character.id ? [...current, result.comment] : current,
+      );
+      if (!parent) setThreadDraft("");
+      return true;
+    } catch (error) {
+      console.error("Could not save comment.", error);
+      setCommentError(error instanceof Error ? error.message : "Your comment could not be saved.");
+      return false;
+    } finally {
+      setSubmittingComment(false);
+    }
   }
 
-  function updateThread(threadId: string, update: (thread: Thread) => Thread) {
-    if (!selectedCharacter) return;
-    setThreadsByCharacter((current) => ({
-      ...current,
-      [selectedCharacter.id]: (current[selectedCharacter.id] ?? []).map((thread) =>
-        thread.id === threadId ? update(thread) : thread,
-      ),
-    }));
+  async function submitThread(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await createComment(null, threadDraft);
   }
 
-  function addReply(event: FormEvent<HTMLFormElement>, thread: Thread) {
-    event.preventDefault();
-    const text = thread.replyDraft.trim();
-    if (!text) return;
-    updateThread(thread.id, (current) => ({
-      ...current,
-      replies: [...current.replies, { id: createId(), author: "You", text, time: "just now" }],
-      replyDraft: "",
-      replyOpen: false,
-    }));
+  async function loadMoreComments() {
+    if (!selectedCharacter || !guestIdentity || !commentCursor || loadingMoreComments) return;
+
+    setLoadingMoreComments(true);
+    setCommentError("");
+    try {
+      const query = new URLSearchParams({
+        characterId: selectedCharacter.id,
+        voterId: guestIdentity.userId,
+        cursor: commentCursor,
+      });
+      const response = await fetch(`/api/comments?${query}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(await getApiError(response));
+      const page = (await response.json()) as CommentPage;
+      setComments((current) => {
+        const knownIds = new Set(current.map((comment) => comment.id));
+        return [
+          ...current,
+          ...page.comments.filter((comment) => !knownIds.has(comment.id)),
+        ];
+      });
+      setCommentCursor(page.nextCursor);
+      setHasMoreComments(page.nextCursor !== null);
+    } catch (error) {
+      console.error("Could not load more comments.", error);
+      setCommentError(error instanceof Error ? error.message : "More comments could not be loaded.");
+    } finally {
+      setLoadingMoreComments(false);
+    }
+  }
+
+  async function voteOnComment(
+    comment: CommentRecord,
+    vote: Exclude<CommentVote, null>,
+  ) {
+    if (!selectedCharacter || !guestIdentity || votingCommentIds.has(comment.id)) return;
+    const characterId = selectedCharacter.id;
+    const nextVote = comment.myVote === vote ? null : vote;
+    setVotingCommentIds((current) => new Set(current).add(comment.id));
+    setCommentError("");
+
+    try {
+      const response = await fetch("/api/comments", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characterId,
+          commentId: comment.id,
+          commentTimestamp: comment.timestamp,
+          voterId: guestIdentity.userId,
+          vote: nextVote,
+        }),
+      });
+      if (!response.ok) throw new Error(await getApiError(response));
+      const result = (await response.json()) as {
+        likes: number;
+        dislikes: number;
+        myVote: CommentVote;
+      };
+      setComments((current) =>
+        selectedId === characterId
+          ? current.map((item) =>
+              item.id === comment.id
+                ? { ...item, likes: result.likes, dislikes: result.dislikes, myVote: result.myVote }
+                : item,
+            )
+          : current,
+      );
+    } catch (error) {
+      console.error("Could not save comment vote.", error);
+      setCommentError(error instanceof Error ? error.message : "Your vote could not be saved.");
+    } finally {
+      setVotingCommentIds((current) => {
+        const next = new Set(current);
+        next.delete(comment.id);
+        return next;
+      });
+    }
+  }
+
+  function changeUsername(username: string) {
+    setGuestIdentity((current) => (current ? { ...current, username } : current));
   }
 
   return (
@@ -237,8 +506,8 @@ export default function Home() {
             <p className="daily-copy">Two iconic characters. One very important decision.</p>
           </div>
           <div className="profile-row">
-            <div className="profile-avatar">Y</div>
-            <div className="profile-copy"><strong>You</strong><span>Professional swiper</span></div>
+            <div className="profile-avatar">{guestIdentity?.username.slice(0, 1).toUpperCase() ?? "G"}</div>
+            <div className="profile-copy"><strong>{guestIdentity?.username || "Guest"}</strong><span>Guest profile</span></div>
             <span className="profile-menu">···</span>
           </div>
         </div>
@@ -354,7 +623,9 @@ export default function Home() {
               <div className="chat-total"><strong>{String(matches.length).padStart(2, "0")}</strong><span>CONNECTIONS</span></div>
             </div>
 
-            {matches.length === 0 ? (
+            {!matchesLoaded ? (
+              <div className="no-matches"><p>Loading your chats...</p></div>
+            ) : matches.length === 0 ? (
               <div className="no-matches">
                 <div className="empty-heart">♡</div>
                 <div className="eyebrow">YOUR INBOX IS WAITING</div>
@@ -394,66 +665,69 @@ export default function Home() {
                     </header>
                     <div className="community-intro">
                       <div className="community-icon">✳</div>
-                      <div><h3>Your little corner of the internet.</h3><p>Start a thread, share a thought, or jump into the conversation.</p></div>
+                      <div><h3>Your little corner of the internet.</h3><p>Post a thought or reply to a comment. Anyone can join in.</p></div>
                     </div>
-                    <form className="thread-composer" onSubmit={addThread}>
-                      <div className="composer-avatar">Y</div>
+                    <form className="thread-composer" onSubmit={submitThread}>
+                      <div className="composer-avatar">{guestIdentity?.username.slice(0, 1).toUpperCase() ?? "G"}</div>
                       <div className="composer-content">
+                        <label className="guest-name-label" htmlFor="guest-name">POSTING AS</label>
+                        <input
+                          id="guest-name"
+                          className="guest-name-input"
+                          value={guestIdentity?.username ?? ""}
+                          onChange={(event) => changeUsername(event.target.value)}
+                          placeholder="Choose a display name"
+                          aria-label="Your display name"
+                          maxLength={24}
+                          required
+                        />
                         <textarea
                           value={threadDraft}
                           onChange={(event) => setThreadDraft(event.target.value)}
-                          placeholder={`Start a thread about ${selectedCharacter.name}...`}
-                          aria-label={`Start a thread about ${selectedCharacter.name}`}
-                          maxLength={500}
+                          placeholder={`Start a discussion about ${selectedCharacter.name}...`}
+                          aria-label={`Start a discussion about ${selectedCharacter.name}`}
+                          maxLength={1000}
                           rows={2}
                         />
                         <div className="composer-footer">
-                          <span>Be kind. Be interesting.</span>
-                          <button type="submit" className="post-button" disabled={!threadDraft.trim()}>Post <span>↗</span></button>
+                          <span>Guest names are not verified until sign-in is added.</span>
+                          <button type="submit" className="post-button" disabled={!threadDraft.trim() || !guestIdentity?.username.trim() || submittingComment}>
+                            {submittingComment ? "Posting..." : "Post"} <span>↗</span>
+                          </button>
                         </div>
                       </div>
                     </form>
 
-                    <div className="discussion-heading"><span>THE DISCUSSION</span><span>{selectedThreads.length} {selectedThreads.length === 1 ? "THREAD" : "THREADS"}</span></div>
+                    {storageWarning && <p className="comment-notice" role="status">{storageWarning}</p>}
+                    <div className="discussion-heading"><span>THE DISCUSSION</span><span>{comments.length} {comments.length === 1 ? "COMMENT" : "COMMENTS"}</span></div>
                     <div className="thread-feed">
-                      {selectedThreads.length === 0 ? (
-                        <div className="feed-empty"><div>✎</div><p>No threads yet. You could be the first.</p></div>
-                      ) : selectedThreads.map((thread) => (
-                        <article className="thread-card" key={thread.id}>
-                          <div className="thread-user-avatar">Y</div>
-                          <div className="thread-body">
-                            <div className="thread-meta"><strong>{thread.author}</strong><span>·</span><span>{thread.time}</span></div>
-                            <p className="thread-text">{thread.text}</p>
-                            <div className="thread-actions">
-                              <button className={thread.liked ? "action-liked" : ""} onClick={() => updateThread(thread.id, (current) => ({ ...current, liked: !current.liked }))} aria-label={thread.liked ? "Unlike thread" : "Like thread"}>
-                                <span>{thread.liked ? "♥" : "♡"}</span> {thread.liked ? "1" : "Like"}
-                              </button>
-                              <button onClick={() => updateThread(thread.id, (current) => ({ ...current, replyOpen: !current.replyOpen }))}>
-                                <span>↩</span> Reply {thread.replies.length > 0 && `· ${thread.replies.length}`}
-                              </button>
-                            </div>
-                            {thread.replies.map((reply) => (
-                              <div className="reply-row" key={reply.id}>
-                                <div className="reply-avatar">Y</div>
-                                <div><div className="thread-meta"><strong>{reply.author}</strong><span>·</span><span>{reply.time}</span></div><p>{reply.text}</p></div>
-                              </div>
-                            ))}
-                            {thread.replyOpen && (
-                              <form className="reply-form" onSubmit={(event) => addReply(event, thread)}>
-                                <input
-                                  value={thread.replyDraft}
-                                  onChange={(event) => updateThread(thread.id, (current) => ({ ...current, replyDraft: event.target.value }))}
-                                  placeholder="Write a reply..."
-                                  aria-label="Write a reply"
-                                  maxLength={300}
-                                />
-                                <button type="submit" disabled={!thread.replyDraft.trim()}>Reply</button>
-                              </form>
-                            )}
-                          </div>
-                        </article>
+                      {commentsLoading ? (
+                        <div className="feed-empty"><p>Loading comments...</p></div>
+                      ) : comments.length === 0 ? (
+                        <div className="feed-empty">
+                          <div>{commentError ? "!" : "✎"}</div>
+                          <p>{commentError ? "Comments could not be loaded." : "No comments yet. Start the conversation."}</p>
+                        </div>
+                      ) : roots.length === 0 ? (
+                        <div className="feed-empty"><p>Load earlier comments to see the conversations these replies belong to.</p></div>
+                      ) : roots.map((comment) => (
+                        <CommentItem
+                          key={comment.id}
+                          comment={comment}
+                          childrenByParent={childrenByParent}
+                          username={guestIdentity?.username ?? "Guest"}
+                          votingCommentIds={votingCommentIds}
+                          onCreateReply={createComment}
+                          onVote={voteOnComment}
+                        />
                       ))}
                     </div>
+                    {commentError && <p className="comment-error" role="alert">{commentError}</p>}
+                    {hasMoreComments && (
+                      <button className="load-comments-button" onClick={loadMoreComments} disabled={loadingMoreComments}>
+                        {loadingMoreComments ? "Loading..." : "Load earlier comments"}
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="select-match-prompt">Choose a match to open the conversation.</div>
